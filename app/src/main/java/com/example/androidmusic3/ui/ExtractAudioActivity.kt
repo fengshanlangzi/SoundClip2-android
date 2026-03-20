@@ -9,6 +9,7 @@ import android.os.Environment
 import android.provider.MediaStore
 import android.provider.OpenableColumns
 import android.content.DialogInterface
+import android.text.TextUtils
 import android.view.View
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.FileProvider
@@ -17,6 +18,8 @@ import com.example.androidmusic3.R
 import com.example.androidmusic3.model.AudioFile
 import com.example.androidmusic3.util.AudioExtractor
 import com.example.androidmusic3.util.PermissionHelper
+import com.google.android.material.textfield.TextInputEditText
+import com.google.android.material.textfield.TextInputLayout
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -36,6 +39,8 @@ class ExtractAudioActivity : AppCompatActivity() {
     private lateinit var btnShare: com.google.android.material.button.MaterialButton
     private lateinit var btnBack: com.google.android.material.button.MaterialButton
     private lateinit var txtSelectedFile: androidx.appcompat.widget.AppCompatTextView
+    private lateinit var textInputLayoutFilename: TextInputLayout
+    private lateinit var etFilename: TextInputEditText
 
     private var selectedVideoUri: Uri? = null
     private var extractedAudioPath: String? = null
@@ -64,8 +69,11 @@ class ExtractAudioActivity : AppCompatActivity() {
         btnShare = findViewById(R.id.btnShare)
         btnBack = findViewById(R.id.btnBack)
         txtSelectedFile = findViewById(R.id.txtSelectedFile)
+        textInputLayoutFilename = findViewById(R.id.textInputLayoutFilename)
+        etFilename = findViewById(R.id.etFilename)
 
         progressBar.visibility = View.GONE
+        textInputLayoutFilename.visibility = View.GONE
         btnExtract.isEnabled = false
         btnSave.isEnabled = false
         btnShare.isEnabled = false
@@ -106,6 +114,7 @@ class ExtractAudioActivity : AppCompatActivity() {
             txtStatus.text = "Extracting audio..."
             progressBar.visibility = View.VISIBLE
             btnExtract.isEnabled = false
+            textInputLayoutFilename.visibility = View.GONE
 
             val originalFileName = getFileName(uri) ?: "extracted_audio"
             val baseName = originalFileName.substringBeforeLast('.')
@@ -134,7 +143,13 @@ class ExtractAudioActivity : AppCompatActivity() {
                         extractedAudioPath = extractionResult.filePath
                         extractedDurationMs = extractionResult.durationMs
                         val file = File(extractionResult.filePath)
-                        txtStatus.text = "Extraction complete!\n${file.name}"
+                        txtStatus.text = "Extraction complete!\nCurrent file: ${file.name}"
+
+                        // Show filename input and set default value
+                        textInputLayoutFilename.visibility = View.VISIBLE
+                        etFilename.setText(baseName)
+                        etFilename.setSelection(etFilename.text?.length ?: 0) // Move cursor to end
+
                         btnSave.isEnabled = true
                         btnShare.isEnabled = true
                     }.onFailure { error ->
@@ -154,6 +169,16 @@ class ExtractAudioActivity : AppCompatActivity() {
                 return
             }
 
+            // Get custom filename from input
+            val customFilename = etFilename.text?.toString()?.trim()
+            if (customFilename.isNullOrEmpty()) {
+                showAlertDialog("Error", "Please enter a filename")
+                return
+            }
+
+            // Sanitize filename (remove invalid characters)
+            val sanitizedFilename = customFilename.replace(Regex("[\\\\/:*?\"<>|]"), "_")
+
             CoroutineScope(Dispatchers.IO).launch {
                 try {
                     // Determine MIME type based on file extension
@@ -163,10 +188,13 @@ class ExtractAudioActivity : AppCompatActivity() {
                         else -> "audio/mp4" // Default for AAC/M4A
                     }
 
-                    android.util.Log.d("ExtractAudioActivity", "Saving file with MIME type: $mimeType")
+                    val extension = ".m4a"
+                    val displayName = sanitizedFilename + extension
+
+                    android.util.Log.d("ExtractAudioActivity", "Saving file with MIME type: $mimeType, name: $displayName")
 
                     val contentValues = ContentValues().apply {
-                        put(MediaStore.Audio.Media.DISPLAY_NAME, file.name)
+                        put(MediaStore.Audio.Media.DISPLAY_NAME, displayName)
                         put(MediaStore.Audio.Media.MIME_TYPE, mimeType)
                         put(MediaStore.Audio.Media.RELATIVE_PATH, if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                             Environment.DIRECTORY_MUSIC + "/Extracted"
@@ -196,8 +224,8 @@ class ExtractAudioActivity : AppCompatActivity() {
                         contentValues.put(MediaStore.Audio.Media.IS_PENDING, 0)
                         contentResolver.update(it, contentValues, null, null)
 
-                        // Add to MediaManager using fromPath with correct duration
-                        val title = file.nameWithoutExtension
+                        // Add to MediaManager using the saved file URI
+                        val title = sanitizedFilename
                         val audioFile = AudioFile.fromPath(file.absolutePath, title, extractedDurationMs)
                         val mediaManager = MediaManager.getInstance(this@ExtractAudioActivity)
                         mediaManager.addAudioFile(audioFile)
@@ -205,13 +233,14 @@ class ExtractAudioActivity : AppCompatActivity() {
                         withContext(Dispatchers.Main) {
                             showAlertDialog(
                                 "Saved",
-                                "Audio saved to library successfully!"
+                                "Audio saved as '$displayName' to library!"
                             ) { _, _ ->
                                 finish()
                             }
                         }
                     }
                 } catch (e: Exception) {
+                    android.util.Log.e("ExtractAudioActivity", "Failed to save audio", e)
                     withContext(Dispatchers.Main) {
                         showAlertDialog("Error", "Failed to save audio: ${e.message}")
                     }

@@ -113,6 +113,27 @@
             android:textColor="@color/text_primary"
             android:textSize="14sp" />
 
+        <!-- Filename input (visible after extraction) -->
+        <com.google.android.material.textfield.TextInputLayout
+            android:id="@+id/textInputLayoutFilename"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:visibility="gone"
+            app:hintEnabled="true"
+            app:hintTextColor="@color/primary"
+            android:textColorHint="@color/text_secondary">
+
+            <com.google.android.material.textfield.TextInputEditText
+                android:id="@+id/etFilename"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:hint="Filename (without extension)"
+                android:inputType="text"
+                android:maxLines="1"
+                android:singleLine="true" />
+        </com.google.android.material.textfield.TextInputLayout>
+
         <!-- Action buttons -->
         <LinearLayout
             android:layout_width="match_parent"
