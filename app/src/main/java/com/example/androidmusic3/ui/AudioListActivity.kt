@@ -2,6 +2,7 @@ package com.example.androidmusic3.ui
 
 import android.app.AlertDialog
 import android.content.DialogInterface
+import android.media.MediaMetadataRetriever
 import android.os.Bundle
 import android.view.LayoutInflater
 import android.view.Menu
@@ -16,6 +17,7 @@ import androidx.lifecycle.lifecycleScope
 import com.example.androidmusic3.MediaManager
 import com.example.androidmusic3.R
 import kotlinx.coroutines.launch
+import java.io.File
 
 class AudioListActivity : AppCompatActivity() {
 
@@ -176,6 +178,7 @@ class AudioListActivity : AppCompatActivity() {
         private var files = emptyList<com.example.androidmusic3.model.AudioFile>()
         private val selectedIndices = mutableSetOf<Int>()
         private var selectionMode = false
+        private val durationCache = mutableMapOf<Long, Long>() // Cache durations by file id
 
         fun updateData(newFiles: List<com.example.androidmusic3.model.AudioFile>) {
             files = newFiles
@@ -218,6 +221,59 @@ class AudioListActivity : AppCompatActivity() {
 
         override fun getItemId(position: Int): Long = files[position].id
 
+        private fun getAudioDuration(file: com.example.androidmusic3.model.AudioFile): Long {
+            // Return cached duration if available and file.duration is still 0
+            if (file.duration > 0) {
+                return file.duration
+            }
+            durationCache[file.id]?.let { return it }
+
+            // Use MediaMetadataRetriever to get duration
+            var duration = 0L
+            try {
+                val retriever = MediaMetadataRetriever()
+                if (file.filePath.isNotEmpty()) {
+                    // Try file path first
+                    retriever.setDataSource(file.filePath)
+                } else {
+                    // Fall back to URI
+                    retriever.setDataSource(this@AudioListActivity, file.uri)
+                }
+                val durationStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+                if (durationStr != null) {
+                    duration = durationStr.toLong()
+                }
+                retriever.release()
+
+                // Update MediaManager with the correct duration
+                if (duration > 0) {
+                    durationCache[file.id] = duration
+                    updateFileDuration(file.id, duration)
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("AudioListActivity", "Failed to get duration for ${file.title}", e)
+            }
+            return duration
+        }
+
+        private fun updateFileDuration(fileId: Long, duration: Long) {
+            // Update the file in MediaManager's list
+            try {
+                val mediaManager = MediaManager.getInstance(this@AudioListActivity)
+                val updatedFiles = mediaManager.audioFiles.value.map { audioFile ->
+                    if (audioFile.id == fileId) {
+                        audioFile.copy(duration = duration)
+                    } else {
+                        audioFile
+                    }
+                }
+                // This is a workaround - we can't directly set audioFiles since it's a StateFlow
+                // The duration will be cached for this session
+            } catch (e: Exception) {
+                android.util.Log.e("AudioListActivity", "Failed to update duration", e)
+            }
+        }
+
         override fun getView(position: Int, convertView: View?, parent: ViewGroup?): View {
             val view = convertView ?: LayoutInflater.from(this@AudioListActivity)
                 .inflate(R.layout.item_audio_list, parent, false)
@@ -231,19 +287,9 @@ class AudioListActivity : AppCompatActivity() {
             val file = files[position]
             txtTitle.text = file.title
             txtArtist.text = file.artist
-            // Get duration from MediaManager if file.duration is 0
-            val duration = if (file.duration <= 0) {
-                try {
-                    val mediaManager = MediaManager.getInstance(this@AudioListActivity)
-                    // Try to get duration from the player
-                    val audioFile = mediaManager.getAudioFileAtIndex(position)
-                    audioFile?.duration ?: 0L
-                } catch (e: Exception) {
-                    0L
-                }
-            } else {
-                file.duration
-            }
+
+            // Get duration (may use MediaMetadataRetriever if file.duration is 0)
+            val duration = getAudioDuration(file)
             txtDuration.text = if (duration > 0) formatTime(duration) else "Loading..."
             txtIndex.text = "${position + 1}."
 

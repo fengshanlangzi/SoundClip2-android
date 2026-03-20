@@ -24,21 +24,23 @@ data class AudioFile(
             )
         }
 
-        fun fromPath(context: Context, filePath: String, title: String): AudioFile {
+        fun fromPath(filePath: String, title: String, duration: Long = 0L): AudioFile {
             val file = File(filePath)
-            var duration = 0L
+            var actualDuration = duration
 
-            // Try to get duration from the file
-            try {
-                val retriever = MediaMetadataRetriever()
-                retriever.setDataSource(filePath)
-                val durationStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
-                if (durationStr != null) {
-                    duration = durationStr.toLong()
+            // Try to get duration from the file if not provided
+            if (actualDuration <= 0) {
+                try {
+                    val retriever = MediaMetadataRetriever()
+                    retriever.setDataSource(filePath)
+                    val durationStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+                    if (durationStr != null) {
+                        actualDuration = durationStr.toLong()
+                    }
+                    retriever.release()
+                } catch (e: Exception) {
+                    // Ignore errors, duration will be 0
                 }
-                retriever.release()
-            } catch (e: Exception) {
-                // Ignore errors, duration will be 0
             }
 
             return AudioFile(
@@ -46,7 +48,7 @@ data class AudioFile(
                 uri = android.net.Uri.fromFile(file),
                 title = title,
                 artist = "Unknown",
-                duration = duration,
+                duration = actualDuration,
                 filePath = filePath,
                 isExtracted = true
             )

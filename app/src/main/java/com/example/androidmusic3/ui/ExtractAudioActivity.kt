@@ -39,6 +39,7 @@ class ExtractAudioActivity : AppCompatActivity() {
 
     private var selectedVideoUri: Uri? = null
     private var extractedAudioPath: String? = null
+    private var extractedDurationMs: Long = 0L
     private val audioExtractor = AudioExtractor(this)
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -128,10 +129,11 @@ class ExtractAudioActivity : AppCompatActivity() {
                     progressBar.visibility = View.GONE
                     btnExtract.isEnabled = true
 
-                    result.onSuccess { path ->
-                        android.util.Log.d("ExtractAudioActivity", "Extraction successful: $path")
-                        extractedAudioPath = path
-                        val file = File(path)
+                    result.onSuccess { extractionResult ->
+                        android.util.Log.d("ExtractAudioActivity", "Extraction successful: ${extractionResult.filePath}, duration: ${extractionResult.durationMs}")
+                        extractedAudioPath = extractionResult.filePath
+                        extractedDurationMs = extractionResult.durationMs
+                        val file = File(extractionResult.filePath)
                         txtStatus.text = "Extraction complete!\n${file.name}"
                         btnSave.isEnabled = true
                         btnShare.isEnabled = true
@@ -154,9 +156,18 @@ class ExtractAudioActivity : AppCompatActivity() {
 
             CoroutineScope(Dispatchers.IO).launch {
                 try {
+                    // Determine MIME type based on file extension
+                    val mimeType = when {
+                        path.endsWith(".mp3", ignoreCase = true) -> "audio/mpeg"
+                        path.endsWith(".m4a", ignoreCase = true) -> "audio/mp4a"
+                        else -> "audio/mp4a" // Default for AAC/M4A
+                    }
+
+                    android.util.Log.d("ExtractAudioActivity", "Saving file with MIME type: $mimeType")
+
                     val contentValues = ContentValues().apply {
                         put(MediaStore.Audio.Media.DISPLAY_NAME, file.name)
-                        put(MediaStore.Audio.Media.MIME_TYPE, "audio/aac")
+                        put(MediaStore.Audio.Media.MIME_TYPE, mimeType)
                         put(MediaStore.Audio.Media.RELATIVE_PATH, if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                             Environment.DIRECTORY_MUSIC + "/Extracted"
                         } else {
@@ -185,9 +196,9 @@ class ExtractAudioActivity : AppCompatActivity() {
                         contentValues.put(MediaStore.Audio.Media.IS_PENDING, 0)
                         contentResolver.update(it, contentValues, null, null)
 
-                        // Add to MediaManager using fromPath to get correct duration
+                        // Add to MediaManager using fromPath with correct duration
                         val title = file.nameWithoutExtension
-                        val audioFile = AudioFile.fromPath(this@ExtractAudioActivity, file.absolutePath, title)
+                        val audioFile = AudioFile.fromPath(file.absolutePath, title, extractedDurationMs)
                         val mediaManager = MediaManager.getInstance(this@ExtractAudioActivity)
                         mediaManager.addAudioFile(audioFile)
 
