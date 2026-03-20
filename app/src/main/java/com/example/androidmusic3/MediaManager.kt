@@ -20,6 +20,9 @@ class MediaManager private constructor(private val context: Context) {
     private val exoPlayer: ExoPlayer = ExoPlayer.Builder(context).build()
     private val mainHandler = Handler(Looper.getMainLooper())
 
+    private var rangeCheckRunnable: Runnable? = null
+    private val rangeCheckInterval = 100L // Check every 100ms
+
     private val _audioFiles = MutableStateFlow<List<AudioFile>>(emptyList())
     val audioFiles: StateFlow<List<AudioFile>> = _audioFiles.asStateFlow()
 
@@ -43,53 +46,6 @@ class MediaManager private constructor(private val context: Context) {
         loadSettings()
     }
 
-    private val rangeCheckRunnable = object : Runnable {
-        override fun run() {
-            _playbackRange.value?.let { range ->
-                if (exoPlayer.isPlaying && exoPlayer.duration > 0) {
-                    val currentPosition = exoPlayer.currentPosition
-                    val endMs = range.getEndMs(exoPlayer.duration)
-
-                    // 如果当前位置小于区间开始，seek到开始
-                    if (currentPosition < range.startMs) {
-                        exoPlayer.seekTo(range.startMs)
-                    }
-                    // 如果当前位置超过区间结束，seek回开始并增加循环次数
-                    else if (currentPosition >= endMs) {
-                        exoPlayer.seekTo(range.startMs)
-                        if (loopCount == -1 || currentLoopCount < loopCount) {
-                            currentLoopCount++
-                            _playbackState.value = _playbackState.value.copy(currentLoop = currentLoopCount)
-                        } else {
-                            // 循环次数已用完，停止播放
-                            exoPlayer.pause()
-                            _playbackState.value = _playbackState.value.copy(isPlaying = false)
-                        }
-                    }
-                }
-            }
-
-            // 继续检查（每500ms）
-            mainHandler.postDelayed(this, 500)
-        }
-    }
-
-    private var isRangeCheckScheduled = false
-
-    private fun startRangeCheck() {
-        if (!isRangeCheckScheduled && _playbackRange.value != null) {
-            isRangeCheckScheduled = true
-            mainHandler.post(rangeCheckRunnable)
-        }
-    }
-
-    private fun stopRangeCheck() {
-        if (isRangeCheckScheduled) {
-            isRangeCheckScheduled = false
-            mainHandler.removeCallbacks(rangeCheckRunnable)
-        }
-    }
-
     private fun setupPlayerListener() {
         exoPlayer.addListener(object : Player.Listener {
             override fun onPlaybackStateChanged(playbackState: Int) {
@@ -106,18 +62,25 @@ class MediaManager private constructor(private val context: Context) {
                             duration = exoPlayer.duration,
                             isPlaying = exoPlayer.isPlaying
                         )
-                        // Apply range if exists and playing
+                        // Apply range if exists
                         _playbackRange.value?.let { range ->
-                            if (exoPlayer.isPlaying && exoPlayer.duration > 0) {
-                                // Seek to start of range
-                                exoPlayer.seekTo(range.startMs)
-                                startRangeCheck()
+                            if (exoPlayer.duration > 0) {
+                                // Seek to start of range if needed
+                                if (exoPlayer.currentPosition < range.startMs) {
+                                    exoPlayer.seekTo(range.startMs)
+                                }
+                                // Start range check if playing
+                                if (exoPlayer.isPlaying) {
+                                    startRangeCheck()
+                                }
                             }
+                        } ?: run {
+                            stopRangeCheck()
                         }
                     }
                     Player.STATE_ENDED -> {
                         stopRangeCheck()
-                        // Check if we reached end due to range
+                        // Check if we reached end
                         _playbackRange.value?.let { range ->
                             // 如果是无限循环(loopCount == -1)或者还有循环次数，继续循环
                             if (loopCount == -1 || currentLoopCount < loopCount) {
@@ -145,6 +108,7 @@ class MediaManager private constructor(private val context: Context) {
 
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 _playbackState.value = _playbackState.value.copy(isPlaying = isPlaying)
+                // Start or stop range check based on playing state
                 if (isPlaying && _playbackRange.value != null) {
                     startRangeCheck()
                 } else {
@@ -178,7 +142,6 @@ class MediaManager private constructor(private val context: Context) {
 
             override fun onPlayerError(error: PlaybackException) {
                 _playbackState.value = _playbackState.value.copy(isPlaying = false)
-                stopRangeCheck()
 
                 // 检查是否是权限错误
                 if (error.errorCode == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS ||
@@ -303,20 +266,11 @@ class MediaManager private constructor(private val context: Context) {
                     _playbackState.value = _playbackState.value.copy(
                         currentAudioIndex = savedCurrentIndex
                     )
-                    // Delay seek to position and apply range after player is ready
+                    // Delay seek to position after player is ready
                     exoPlayer.addListener(object : Player.Listener {
                         override fun onPlaybackStateChanged(state: Int) {
                             if (state == Player.STATE_READY) {
                                 exoPlayer.seekTo(savedCurrentPosition)
-                                // 如果有保存的播放区间，应用它
-                                _playbackRange.value?.let { range ->
-                                    val currentPosition = exoPlayer.currentPosition
-                                    val endMs = range.getEndMs(exoPlayer.duration)
-                                    // 如果当前位置不在区间内，seek到区间开始
-                                    if (currentPosition < range.startMs || currentPosition >= endMs) {
-                                        exoPlayer.seekTo(range.startMs)
-                                    }
-                                }
                                 exoPlayer.removeListener(this)
                             }
                         }
@@ -477,6 +431,10 @@ class MediaManager private constructor(private val context: Context) {
                         exoPlayer.prepare()
                     }
                     exoPlayer.play()
+                    // Start range check if a range is set
+                    if (_playbackRange.value != null) {
+                        startRangeCheck()
+                    }
                 }
             } catch (e: Exception) {
                 // 捕获异常并重试
@@ -490,6 +448,7 @@ class MediaManager private constructor(private val context: Context) {
     fun pause() {
         mainHandler.post {
             exoPlayer.pause()
+            stopRangeCheck()
         }
     }
 
@@ -562,7 +521,7 @@ class MediaManager private constructor(private val context: Context) {
             // Apply range to player immediately
             mainHandler.post {
                 if (_audioFiles.value.isNotEmpty()) {
-                    // 如果正在播放，立即应用区间
+                    // 如果正在播放，启动区间检查并seek到开始位置
                     if (exoPlayer.isPlaying) {
                         exoPlayer.seekTo(range.startMs)
                         startRangeCheck()
@@ -572,7 +531,6 @@ class MediaManager private constructor(private val context: Context) {
                             exoPlayer.prepare()
                         }
                         exoPlayer.seekTo(range.startMs)
-                        startRangeCheck()
                     }
                     saveSettings()
                 } else {
@@ -616,7 +574,60 @@ class MediaManager private constructor(private val context: Context) {
         return exoPlayer.currentMediaItemIndex
     }
 
+    private fun startRangeCheck() {
+        stopRangeCheck() // Stop any existing check first
+
+        val range = _playbackRange.value ?: return
+
+        rangeCheckRunnable = object : Runnable {
+            override fun run() {
+                if (!exoPlayer.isPlaying) {
+                    stopRangeCheck()
+                    return
+                }
+
+                val currentPosition = exoPlayer.currentPosition
+                val endMs = if (range.durationMs == -1L) {
+                    exoPlayer.duration
+                } else {
+                    range.startMs + range.durationMs
+                }
+
+                // Check if we've passed the end of the range
+                if (currentPosition >= endMs) {
+                    // Check loop count
+                    if (loopCount == -1 || currentLoopCount < loopCount) {
+                        // Loop: increment count and seek to start
+                        if (currentLoopCount < loopCount) {
+                            currentLoopCount++
+                        }
+                        _playbackState.value = _playbackState.value.copy(currentLoop = currentLoopCount)
+                        exoPlayer.seekTo(range.startMs)
+                    } else {
+                        // No more loops: stop playback
+                        exoPlayer.pause()
+                        stopRangeCheck()
+                    }
+                }
+
+                // Schedule next check
+                if (exoPlayer.isPlaying) {
+                    mainHandler.postDelayed(this, rangeCheckInterval)
+                }
+            }
+        }
+        mainHandler.post(rangeCheckRunnable!!)
+    }
+
+    private fun stopRangeCheck() {
+        rangeCheckRunnable?.let {
+            mainHandler.removeCallbacks(it)
+            rangeCheckRunnable = null
+        }
+    }
+
     fun release() {
+        stopRangeCheck()
         exoPlayer.release()
     }
 

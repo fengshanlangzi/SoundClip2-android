@@ -92,6 +92,7 @@ class ImportActivity : AppCompatActivity(), LoaderManager.LoaderCallbacks<androi
             return
         }
 
+        // 在后台线程处理文件复制
         CoroutineScope(Dispatchers.IO).launch {
             val mediaManager = MediaManager.getInstance(this@ImportActivity)
             try {
@@ -166,7 +167,8 @@ class ImportActivity : AppCompatActivity(), LoaderManager.LoaderCallbacks<androi
                                 title = title,
                                 artist = artist,
                                 duration = duration,
-                                filePath = filePath
+                                filePath = filePath,
+                                isExtracted = false
                             )
                         )
                     } catch (e: Exception) {
@@ -203,50 +205,82 @@ class ImportActivity : AppCompatActivity(), LoaderManager.LoaderCallbacks<androi
                         return@let
                     }
 
-                    val files = uris.mapNotNull { uri ->
-                        try {
-                            val projection = arrayOf(
-                                MediaStore.Audio.Media.DISPLAY_NAME,
-                                MediaStore.Audio.Media.ARTIST
-                            )
-                            contentResolver.query(uri, projection, null, null, null)?.use { cursor ->
-                                if (cursor.moveToFirst()) {
-                                    val titleIndex = cursor.getColumnIndex(MediaStore.Audio.Media.DISPLAY_NAME)
-                                    val artistIndex = cursor.getColumnIndex(MediaStore.Audio.Media.ARTIST)
-                                    val title = cursor.getString(titleIndex)
-                                    val artist = if (artistIndex >= 0) cursor.getString(artistIndex) else "Unknown"
-                                    AudioFile.fromUri(uri, title, artist)
-                                } else null
-                            }
-                        } catch (e: Exception) {
-                            // Skip invalid URIs
-                            null
-                        }
-                    }
+                    // 在后台线程处理文件复制
+                    CoroutineScope(Dispatchers.IO).launch {
+                        val mediaManager = MediaManager.getInstance(this@ImportActivity)
+                        val files = mutableListOf<AudioFile>()
+                        val failedFiles = mutableListOf<String>()
 
-                    if (files.isNotEmpty()) {
-                        CoroutineScope(Dispatchers.IO).launch {
-                            val mediaManager = MediaManager.getInstance(this@ImportActivity)
+                        uris.forEach { uri ->
                             try {
-                                mediaManager.addAudioFiles(files)
+                                android.util.Log.d("ImportActivity", "Processing URI: $uri")
 
-                                withContext(Dispatchers.Main) {
+                                // 复制文件到应用私有目录
+                                val copiedFile = copyFileToAppDir(uri)
+                                if (copiedFile != null) {
+                                    android.util.Log.d("ImportActivity", "File copied successfully: ${copiedFile.title}")
+                                    files.add(copiedFile)
+                                } else {
+                                    android.util.Log.w("ImportActivity", "Failed to copy file, trying to use original URI")
+                                    // 如果复制失败，尝试使用原始URI
+                                    try {
+                                        val audioFile = createAudioFileFromUri(uri)
+                                        if (audioFile != null) {
+                                            files.add(audioFile)
+                                        } else {
+                                            failedFiles.add(uri.toString())
+                                        }
+                                    } catch (e: Exception) {
+                                        android.util.Log.e("ImportActivity", "Failed to create AudioFile from URI", e)
+                                        failedFiles.add(uri.toString())
+                                    }
+                                }
+                            } catch (e: Exception) {
+                                android.util.Log.e("ImportActivity", "Error processing file: ${e.message}", e)
+                                failedFiles.add(uri.toString())
+                            }
+                        }
+
+                        android.util.Log.d("ImportActivity", "Total files to import: ${files.size}, Failed: ${failedFiles.size}")
+
+                        withContext(Dispatchers.Main) {
+                            if (files.isNotEmpty()) {
+                                try {
+                                    mediaManager.addAudioFiles(files)
+
+                                    val message = if (failedFiles.isEmpty()) {
+                                        "Successfully imported ${files.size} audio file(s)."
+                                    } else {
+                                        "Successfully imported ${files.size} audio file(s).\n\nFailed to import ${failedFiles.size} file(s)."
+                                    }
+
                                     androidx.appcompat.app.AlertDialog.Builder(this@ImportActivity)
                                         .setTitle("Import Complete")
-                                        .setMessage("Successfully imported ${files.size} audio file(s).")
+                                        .setMessage(message)
                                         .setPositiveButton("OK") { _, _ ->
                                             finish()
                                         }
                                         .show()
-                                }
-                            } catch (e: Exception) {
-                                withContext(Dispatchers.Main) {
+                                } catch (e: Exception) {
+                                    android.util.Log.e("ImportActivity", "Failed to add files to media manager: ${e.message}", e)
                                     androidx.appcompat.app.AlertDialog.Builder(this@ImportActivity)
                                         .setTitle("Import Failed")
                                         .setMessage("Failed to import files: ${e.message}")
                                         .setPositiveButton("OK", null)
                                         .show()
                                 }
+                            } else {
+                                android.util.Log.w("ImportActivity", "No valid files to import")
+                                val errorMessage = if (failedFiles.isNotEmpty()) {
+                                    "Unable to process the selected audio files. The files may not be supported or are corrupted.\n\nError: ${failedFiles.size} file(s) failed to import."
+                                } else {
+                                    "No valid audio files were selected. Please try again."
+                                }
+                                androidx.appcompat.app.AlertDialog.Builder(this@ImportActivity)
+                                    .setTitle("Import Failed")
+                                    .setMessage(errorMessage)
+                                    .setPositiveButton("OK", null)
+                                    .show()
                             }
                         }
                     }
@@ -255,6 +289,190 @@ class ImportActivity : AppCompatActivity(), LoaderManager.LoaderCallbacks<androi
                 }
             }
         }
+    }
+
+    private fun copyFileToAppDir(uri: android.net.Uri): AudioFile? {
+        return try {
+            android.util.Log.d("ImportActivity", "Copying file to app dir: $uri")
+
+            // 打开输入流
+            val inputStream = contentResolver.openInputStream(uri)
+            if (inputStream == null) {
+                android.util.Log.e("ImportActivity", "Failed to open input stream for URI: $uri")
+                return null
+            }
+
+            inputStream.use { input ->
+                // 创建输出文件
+                val originalFileName = getFileNameFromUri(uri)
+                val fileExtension = if (originalFileName.contains(".")) {
+                    originalFileName.substringAfterLast('.')
+                } else {
+                    "mp3" // 默认扩展名
+                }
+                val fileName = "${System.currentTimeMillis()}_${originalFileName}"
+                val outputFile = java.io.File(filesDir, fileName)
+
+                android.util.Log.d("ImportActivity", "Output file path: ${outputFile.absolutePath}")
+
+                // 复制文件
+                outputFile.outputStream().use { output ->
+                    val bytesCopied = input.copyTo(output)
+                    android.util.Log.d("ImportActivity", "Copied $bytesCopied bytes")
+                }
+
+                android.util.Log.d("ImportActivity", "File copied successfully, getting metadata...")
+
+                // 先尝试从原始URI获取元数据
+                var title = originalFileName.substringBeforeLast('.')
+                var artist = "Unknown"
+                var duration = 0L
+
+                val projection = arrayOf(
+                    MediaStore.Audio.Media.DISPLAY_NAME,
+                    MediaStore.Audio.Media.ARTIST,
+                    MediaStore.Audio.Media.DURATION
+                )
+
+                // 尝试从原始URI获取元数据
+                var cursor = contentResolver.query(uri, projection, null, null, null)
+                if (cursor != null) {
+                    cursor.use {
+                        if (it.moveToFirst()) {
+                            val titleIndex = it.getColumnIndex(MediaStore.Audio.Media.DISPLAY_NAME)
+                            val artistIndex = it.getColumnIndex(MediaStore.Audio.Media.ARTIST)
+                            val durationIndex = it.getColumnIndex(MediaStore.Audio.Media.DURATION)
+
+                            if (titleIndex >= 0) {
+                                val displayName = it.getString(titleIndex)
+                                title = displayName.substringBeforeLast('.')
+                            }
+                            if (artistIndex >= 0) {
+                                it.getString(artistIndex)?.let { a -> artist = a }
+                            }
+                            if (durationIndex >= 0) {
+                                duration = it.getLong(durationIndex)
+                            }
+                        }
+                    }
+                }
+
+                // 如果没有获取到有效的元数据，尝试使用文件URI
+                if (artist == "Unknown" || duration == 0L) {
+                    val fileUri = android.net.Uri.fromFile(outputFile)
+                    cursor = contentResolver.query(fileUri, projection, null, null, null)
+                    if (cursor != null) {
+                        cursor.use {
+                            if (it.moveToFirst()) {
+                                val artistIndex = it.getColumnIndex(MediaStore.Audio.Media.ARTIST)
+                                val durationIndex = it.getColumnIndex(MediaStore.Audio.Media.DURATION)
+
+                                if (artistIndex >= 0) {
+                                    it.getString(artistIndex)?.let { a -> if (artist == "Unknown") artist = a }
+                                }
+                                if (durationIndex >= 0) {
+                                    val d = it.getLong(durationIndex)
+                                    if (duration == 0L) duration = d
+                                }
+                            }
+                        }
+                    }
+                }
+
+                android.util.Log.d("ImportActivity", "Audio metadata - Title: $title, Artist: $artist, Duration: $duration ms")
+
+                AudioFile(
+                    id = System.currentTimeMillis(),
+                    uri = android.net.Uri.fromFile(outputFile),
+                    title = title,
+                    artist = artist,
+                    duration = duration,
+                    filePath = outputFile.absolutePath,
+                    isExtracted = true
+                )
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("ImportActivity", "Error copying file: ${e.message}", e)
+            null
+        }
+    }
+
+    private fun createAudioFileFromUri(uri: android.net.Uri): AudioFile? {
+        return try {
+            android.util.Log.d("ImportActivity", "Creating AudioFile from URI (fallback): $uri")
+
+            // 获取文件名作为标题
+            val fileName = getFileNameFromUri(uri)
+            val title = fileName.substringBeforeLast('.')
+
+            var artist = "Unknown"
+            var duration = 0L
+
+            // 尝试获取元数据
+            val projection = arrayOf(
+                MediaStore.Audio.Media.DISPLAY_NAME,
+                MediaStore.Audio.Media.ARTIST,
+                MediaStore.Audio.Media.DURATION
+            )
+            contentResolver.query(uri, projection, null, null, null)?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    val titleIndex = cursor.getColumnIndex(MediaStore.Audio.Media.DISPLAY_NAME)
+                    val artistIndex = cursor.getColumnIndex(MediaStore.Audio.Media.ARTIST)
+                    val durationIndex = cursor.getColumnIndex(MediaStore.Audio.Media.DURATION)
+
+                    val displayName = if (titleIndex >= 0) cursor.getString(titleIndex) else title
+                    val finalTitle = if (displayName != null) displayName.substringBeforeLast('.') else title
+
+                    if (artistIndex >= 0) {
+                        cursor.getString(artistIndex)?.let { a -> artist = a }
+                    }
+                    if (durationIndex >= 0) {
+                        duration = cursor.getLong(durationIndex)
+                    }
+
+                    android.util.Log.d("ImportActivity", "Fallback - Title: $finalTitle, Artist: $artist, Duration: $duration ms")
+
+                    AudioFile(
+                        id = System.currentTimeMillis(),
+                        uri = uri,
+                        title = finalTitle,
+                        artist = artist,
+                        duration = duration,
+                        filePath = "",
+                        isExtracted = false
+                    )
+                } else {
+                    // 如果无法获取元数据，至少创建一个基本的AudioFile
+                    android.util.Log.w("ImportActivity", "Fallback - Cursor is empty for URI: $uri, using basic info")
+                    AudioFile(
+                        id = System.currentTimeMillis(),
+                        uri = uri,
+                        title = title,
+                        artist = "Unknown",
+                        duration = 0,
+                        filePath = "",
+                        isExtracted = false
+                    )
+                }
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("ImportActivity", "Error in fallback method: ${e.message}", e)
+            null
+        }
+    }
+
+    private fun getFileNameFromUri(uri: android.net.Uri): String {
+        var fileName = "audio.mp3"
+        contentResolver.query(uri, arrayOf(MediaStore.Audio.Media.DISPLAY_NAME), null, null, null)?.use { cursor ->
+            if (cursor.moveToFirst()) {
+                val nameIndex = cursor.getColumnIndex(MediaStore.Audio.Media.DISPLAY_NAME)
+                val name = cursor.getString(nameIndex)
+                if (!name.isNullOrEmpty()) {
+                    fileName = name
+                }
+            }
+        }
+        return fileName
     }
 
     override fun onRequestPermissionsResult(
