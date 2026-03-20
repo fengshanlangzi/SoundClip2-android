@@ -109,7 +109,7 @@ class ExtractAudioActivity : AppCompatActivity() {
 
             val originalFileName = getFileName(uri) ?: "extracted_audio"
             val baseName = originalFileName.substringBeforeLast('.')
-            val outputFileName = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date()) + "_" + baseName + ".aac"
+            val outputFileName = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date()) + "_" + baseName + ".m4a"
 
             android.util.Log.d("ExtractAudioActivity", "Starting extraction from: $uri")
             android.util.Log.d("ExtractAudioActivity", "Output file name: $outputFileName")
@@ -159,8 +159,8 @@ class ExtractAudioActivity : AppCompatActivity() {
                     // Determine MIME type based on file extension
                     val mimeType = when {
                         path.endsWith(".mp3", ignoreCase = true) -> "audio/mpeg"
-                        path.endsWith(".m4a", ignoreCase = true) -> "audio/mp4a"
-                        else -> "audio/mp4a" // Default for AAC/M4A
+                        path.endsWith(".m4a", ignoreCase = true) -> "audio/mp4"
+                        else -> "audio/mp4" // Default for AAC/M4A
                     }
 
                     android.util.Log.d("ExtractAudioActivity", "Saving file with MIME type: $mimeType")
@@ -236,7 +236,7 @@ class ExtractAudioActivity : AppCompatActivity() {
                 )
 
                 val intent = Intent(Intent.ACTION_SEND).apply {
-                    type = "audio/aac"
+                    type = "audio/mp4"
                     putExtra(Intent.EXTRA_STREAM, uri)
                     addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                 }
