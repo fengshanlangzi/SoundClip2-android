@@ -2,6 +2,7 @@ package com.example.androidmusic3.ui
 
 import android.Manifest
 import android.content.Intent
+import android.media.MediaMetadataRetriever
 import android.os.Build
 import android.os.Bundle
 import android.provider.MediaStore
@@ -357,6 +358,22 @@ class ImportActivity : AppCompatActivity(), LoaderManager.LoaderCallbacks<androi
                     }
                 }
 
+                // 如果没有获取到有效的duration，使用MediaMetadataRetriever
+                if (duration == 0L) {
+                    try {
+                        val retriever = MediaMetadataRetriever()
+                        retriever.setDataSource(this@ImportActivity, uri)
+                        val durationStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+                        if (durationStr != null) {
+                            duration = durationStr.toLong()
+                            android.util.Log.d("ImportActivity", "Got duration from MediaMetadataRetriever: $duration ms")
+                        }
+                        retriever.release()
+                    } catch (e: Exception) {
+                        android.util.Log.e("ImportActivity", "Failed to get duration from MediaMetadataRetriever", e)
+                    }
+                }
+
                 // 如果没有获取到有效的元数据，尝试使用文件URI
                 if (artist == "Unknown" || duration == 0L) {
                     val fileUri = android.net.Uri.fromFile(outputFile)
@@ -376,6 +393,22 @@ class ImportActivity : AppCompatActivity(), LoaderManager.LoaderCallbacks<androi
                                 }
                             }
                         }
+                    }
+                }
+
+                // 如果仍然没有获取到duration，再次尝试从复制的文件获取
+                if (duration == 0L) {
+                    try {
+                        val retriever = MediaMetadataRetriever()
+                        retriever.setDataSource(outputFile.absolutePath)
+                        val durationStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+                        if (durationStr != null) {
+                            duration = durationStr.toLong()
+                            android.util.Log.d("ImportActivity", "Got duration from copied file: $duration ms")
+                        }
+                        retriever.release()
+                    } catch (e: Exception) {
+                        android.util.Log.e("ImportActivity", "Failed to get duration from copied file", e)
                     }
                 }
 
@@ -414,14 +447,18 @@ class ImportActivity : AppCompatActivity(), LoaderManager.LoaderCallbacks<androi
                 MediaStore.Audio.Media.ARTIST,
                 MediaStore.Audio.Media.DURATION
             )
+            var finalTitle = title
+            var gotMetadata = false
+
             contentResolver.query(uri, projection, null, null, null)?.use { cursor ->
                 if (cursor.moveToFirst()) {
+                    gotMetadata = true
                     val titleIndex = cursor.getColumnIndex(MediaStore.Audio.Media.DISPLAY_NAME)
                     val artistIndex = cursor.getColumnIndex(MediaStore.Audio.Media.ARTIST)
                     val durationIndex = cursor.getColumnIndex(MediaStore.Audio.Media.DURATION)
 
                     val displayName = if (titleIndex >= 0) cursor.getString(titleIndex) else title
-                    val finalTitle = if (displayName != null) displayName.substringBeforeLast('.') else title
+                    finalTitle = if (displayName != null) displayName.substringBeforeLast('.') else title
 
                     if (artistIndex >= 0) {
                         cursor.getString(artistIndex)?.let { a -> artist = a }
@@ -431,30 +468,34 @@ class ImportActivity : AppCompatActivity(), LoaderManager.LoaderCallbacks<androi
                     }
 
                     android.util.Log.d("ImportActivity", "Fallback - Title: $finalTitle, Artist: $artist, Duration: $duration ms")
-
-                    AudioFile(
-                        id = System.currentTimeMillis(),
-                        uri = uri,
-                        title = finalTitle,
-                        artist = artist,
-                        duration = duration,
-                        filePath = "",
-                        isExtracted = false
-                    )
-                } else {
-                    // 如果无法获取元数据，至少创建一个基本的AudioFile
-                    android.util.Log.w("ImportActivity", "Fallback - Cursor is empty for URI: $uri, using basic info")
-                    AudioFile(
-                        id = System.currentTimeMillis(),
-                        uri = uri,
-                        title = title,
-                        artist = "Unknown",
-                        duration = 0,
-                        filePath = "",
-                        isExtracted = false
-                    )
                 }
             }
+
+            // 如果没有获取到duration，使用MediaMetadataRetriever
+            if (duration == 0L) {
+                try {
+                    val retriever = MediaMetadataRetriever()
+                    retriever.setDataSource(this@ImportActivity, uri)
+                    val durationStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+                    if (durationStr != null) {
+                        duration = durationStr.toLong()
+                        android.util.Log.d("ImportActivity", "Got duration from MediaMetadataRetriever (fallback): $duration ms")
+                    }
+                    retriever.release()
+                } catch (e: Exception) {
+                    android.util.Log.e("ImportActivity", "Failed to get duration from MediaMetadataRetriever (fallback)", e)
+                }
+            }
+
+            AudioFile(
+                id = System.currentTimeMillis(),
+                uri = uri,
+                title = finalTitle,
+                artist = artist,
+                duration = duration,
+                filePath = "",
+                isExtracted = false
+            )
         } catch (e: Exception) {
             android.util.Log.e("ImportActivity", "Error in fallback method: ${e.message}", e)
             null

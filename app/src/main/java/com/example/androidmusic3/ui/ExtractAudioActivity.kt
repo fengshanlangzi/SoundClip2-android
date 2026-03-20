@@ -106,12 +106,12 @@ class ExtractAudioActivity : AppCompatActivity() {
             progressBar.visibility = View.VISIBLE
             btnExtract.isEnabled = false
 
-            val fileName = getFileName(uri) ?: "extracted_audio.aac"
-            val outputFileName = if (fileName.endsWith(".aac")) {
-                SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date()) + "_" + fileName
-            } else {
-                SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date()) + "_" + fileName.substringBeforeLast(".") + ".aac"
-            }
+            val originalFileName = getFileName(uri) ?: "extracted_audio"
+            val baseName = originalFileName.substringBeforeLast('.')
+            val outputFileName = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date()) + "_" + baseName + ".aac"
+
+            android.util.Log.d("ExtractAudioActivity", "Starting extraction from: $uri")
+            android.util.Log.d("ExtractAudioActivity", "Output file name: $outputFileName")
 
             CoroutineScope(Dispatchers.IO).launch {
                 val result = audioExtractor.extractAudioToAAC(
@@ -129,12 +129,15 @@ class ExtractAudioActivity : AppCompatActivity() {
                     btnExtract.isEnabled = true
 
                     result.onSuccess { path ->
+                        android.util.Log.d("ExtractAudioActivity", "Extraction successful: $path")
                         extractedAudioPath = path
-                        txtStatus.text = "Extraction complete!\n$outputFileName"
+                        val file = File(path)
+                        txtStatus.text = "Extraction complete!\n${file.name}"
                         btnSave.isEnabled = true
                         btnShare.isEnabled = true
                     }.onFailure { error ->
-                        txtStatus.text = "Extraction failed: ${error.message}"
+                        android.util.Log.e("ExtractAudioActivity", "Extraction failed", error)
+                        txtStatus.text = "Extraction failed: ${error.message}\n\nPlease try selecting a different video file."
                     }
                 }
             }
@@ -182,9 +185,9 @@ class ExtractAudioActivity : AppCompatActivity() {
                         contentValues.put(MediaStore.Audio.Media.IS_PENDING, 0)
                         contentResolver.update(it, contentValues, null, null)
 
-                        // Add to MediaManager
+                        // Add to MediaManager using fromPath to get correct duration
                         val title = file.nameWithoutExtension
-                        val audioFile = AudioFile.fromUri(it, title)
+                        val audioFile = AudioFile.fromPath(this@ExtractAudioActivity, file.absolutePath, title)
                         val mediaManager = MediaManager.getInstance(this@ExtractAudioActivity)
                         mediaManager.addAudioFile(audioFile)
 

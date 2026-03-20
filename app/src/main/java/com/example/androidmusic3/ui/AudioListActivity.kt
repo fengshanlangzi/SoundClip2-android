@@ -231,7 +231,20 @@ class AudioListActivity : AppCompatActivity() {
             val file = files[position]
             txtTitle.text = file.title
             txtArtist.text = file.artist
-            txtDuration.text = formatTime(file.duration)
+            // Get duration from MediaManager if file.duration is 0
+            val duration = if (file.duration <= 0) {
+                try {
+                    val mediaManager = MediaManager.getInstance(this@AudioListActivity)
+                    // Try to get duration from the player
+                    val audioFile = mediaManager.getAudioFileAtIndex(position)
+                    audioFile?.duration ?: 0L
+                } catch (e: Exception) {
+                    0L
+                }
+            } else {
+                file.duration
+            }
+            txtDuration.text = if (duration > 0) formatTime(duration) else "Loading..."
             txtIndex.text = "${position + 1}."
 
             chkSelect.isChecked = selectedIndices.contains(position)
